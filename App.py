@@ -2,16 +2,17 @@ import streamlit as st
 import torch
 import torchaudio
 import matplotlib.pyplot as plt
+import io
 
-# Set up device
+# Set device (use GPU if available)
 torch.random.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load model and pipeline
+# Load Wav2Vec2 model and pipeline
 bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
 model = bundle.get_model().to(device)
 
-# Decoder class
+# Define CTC Decoder
 class GreedyCTCDecoder(torch.nn.Module):
     def __init__(self, labels, blank=0):
         super().__init__()
@@ -31,56 +32,62 @@ decoder = GreedyCTCDecoder(labels=bundle.get_labels())
 st.title("🎙️ Speech-to-Text with Wav2Vec2")
 st.write("Upload an audio file to transcribe using Wav2Vec2.")
 
-# File upload
+# File uploader
 uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3"])
 
 if uploaded_file is not None:
-    # Load waveform
-    waveform, sample_rate = torchaudio.load(uploaded_file)
-    waveform = waveform.to(device)
+    # Convert uploaded file to BytesIO for torchaudio
+    file_bytes = io.BytesIO(uploaded_file.read())
 
-    # Resample if needed
-    if sample_rate != bundle.sample_rate:
-        waveform = torchaudio.functional.resample(waveform, sample_rate, bundle.sample_rate)
+    # Load waveform from BytesIO
+    try:
+        waveform, sample_rate = torchaudio.load(file_bytes)
+        waveform = waveform.to(device)
 
-    # Transcribe
-    with torch.inference_mode():
-        emission, _ = model(waveform)
+        # Resample if sample rate does not match model's expected rate
+        if sample_rate != bundle.sample_rate:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, bundle.sample_rate)
 
-    # Decode transcript
-    transcript = decoder(emission[0])
+        # Transcribe the audio
+        with torch.inference_mode():
+            emission, _ = model(waveform)
 
-    # Display transcript
-    st.subheader("Transcription:")
-    st.write(transcript)
+        # Decode transcript
+        transcript = decoder(emission[0])
 
-    # Display audio player
-    st.audio(uploaded_file, format='audio/mp3')
+        # Display transcript
+        st.subheader("📝 Transcription:")
+        st.write(transcript)
 
-    # Plot emission data
-    st.subheader("Model Output (Emission Data):")
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.imshow(emission[0].cpu().T, interpolation="nearest", aspect="auto")
-    ax.set_title("Classification result")
-    ax.set_xlabel("Frame (time-axis)")
-    ax.set_ylabel("Class")
-    st.pyplot(fig)
+        # Display audio player
+        st.audio(uploaded_file, format="audio/mp3")
 
-    # Plot features from transformer layers
-    with torch.inference_mode():
-        features, _ = model.extract_features(waveform)
+        # Plot emission data
+        st.subheader("📊 Model Output (Emission Data):")
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.imshow(emission[0].cpu().T, interpolation="nearest", aspect="auto")
+        ax.set_title("Classification result")
+        ax.set_xlabel("Frame (time-axis)")
+        ax.set_ylabel("Class")
+        st.pyplot(fig)
 
-    st.subheader("Feature Maps from Transformer Layers:")
-    fig, axs = plt.subplots(len(features), 1, figsize=(12, 3 * len(features)))
-    if len(features) == 1:
-        axs = [axs]
-    for i, feats in enumerate(features):
-        axs[i].imshow(feats[0].cpu(), interpolation="nearest", aspect="auto")
-        axs[i].set_title(f"Feature from transformer layer {i + 1}")
-        axs[i].set_xlabel("Feature dimension")
-        axs[i].set_ylabel("Frame (time-axis)")
-    st.pyplot(fig)
+        # Extract features from transformer layers
+        with torch.inference_mode():
+            features, _ = model.extract_features(waveform)
+
+        st.subheader("📈 Feature Maps from Transformer Layers:")
+        fig, axs = plt.subplots(len(features), 1, figsize=(12, 3 * len(features)))
+        if len(features) == 1:
+            axs = [axs]
+        for i, feats in enumerate(features):
+            axs[i].imshow(feats[0].cpu(), interpolation="nearest", aspect="auto")
+            axs[i].set_title(f"Feature from transformer layer {i + 1}")
+            axs[i].set_xlabel("Feature dimension")
+            axs[i].set_ylabel("Frame (time-axis)")
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"Error loading audio file: {e}")
 
 # Footer
-st.write("Powered by Torchaudio and Streamlit")
-
+st.write("💡 Powered by Torchaudio, PyTorch, and Streamlit")
