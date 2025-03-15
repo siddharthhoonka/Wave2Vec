@@ -1,18 +1,27 @@
 import streamlit as st
 import torch
 import torchaudio
+from torchaudio.pipelines import WAV2VEC2_ASR_BASE_960H
 import matplotlib.pyplot as plt
 import io
+from pydub import AudioSegment
 
-# Set device (use GPU if available)
+# Set device
 torch.random.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load Wav2Vec2 model and pipeline
-bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
-model = bundle.get_model().to(device)
+# Load the Wav2Vec2 model
+@st.cache_resource
+def load_model():
+    bundle = WAV2VEC2_ASR_BASE_960H
+    model = bundle.get_model().to(device)
+    labels = bundle.get_labels()
+    sample_rate = bundle.sample_rate
+    return model, labels, sample_rate
 
-# Define CTC Decoder
+model, labels, sample_rate = load_model()
+
+# Define GreedyCTCDecoder
 class GreedyCTCDecoder(torch.nn.Module):
     def __init__(self, labels, blank=0):
         super().__init__()
@@ -20,74 +29,68 @@ class GreedyCTCDecoder(torch.nn.Module):
         self.blank = blank
 
     def forward(self, emission: torch.Tensor) -> str:
-        indices = torch.argmax(emission, dim=-1)
-        indices = torch.unique_consecutive(indices, dim=-1)
-        indices = [i for i in indices if i != self.blank]
+        indices = torch.argmax(emission, dim=-1)  # Get predicted class indices
+        indices = torch.unique_consecutive(indices, dim=-1)  # Remove duplicates
+        indices = [i for i in indices if i != self.blank]  # Remove blank tokens
         return "".join([self.labels[i] for i in indices])
 
-# Instantiate decoder
-decoder = GreedyCTCDecoder(labels=bundle.get_labels())
+decoder = GreedyCTCDecoder(labels=labels)
 
 # Streamlit UI
-st.title("🎙️ Speech-to-Text with Wav2Vec2")
-st.write("Upload an audio file to transcribe using Wav2Vec2.")
+st.title("Wave2Vec2 Speech-to-Text with Streamlit")
 
-# File uploader
-uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3"])
+uploaded_file = st.file_uploader("Upload an audio file (MP3, WAV)", type=["mp3", "wav"])
 
 if uploaded_file is not None:
-    # Convert uploaded file to BytesIO for torchaudio
-    file_bytes = io.BytesIO(uploaded_file.read())
-
-    # Load waveform from BytesIO
     try:
-        waveform, sample_rate = torchaudio.load(file_bytes)
+        # Convert to WAV using pydub
+        file_bytes = io.BytesIO(uploaded_file.read())
+        audio = AudioSegment.from_file(file_bytes)
+        wav_bytes = io.BytesIO()
+        audio.export(wav_bytes, format="wav")
+        wav_bytes.seek(0)
+
+        # Load waveform using torchaudio
+        waveform, input_sample_rate = torchaudio.load(wav_bytes)
         waveform = waveform.to(device)
 
-        # Resample if sample rate does not match model's expected rate
-        if sample_rate != bundle.sample_rate:
-            waveform = torchaudio.functional.resample(waveform, sample_rate, bundle.sample_rate)
+        # Resample if sample rate is different
+        if input_sample_rate != sample_rate:
+            waveform = torchaudio.functional.resample(waveform, input_sample_rate, sample_rate)
 
-        # Transcribe the audio
+        # Display audio player
+        st.audio(wav_bytes, format="audio/wav")
+
+        # Extract features from the model
+        with torch.inference_mode():
+            features, _ = model.extract_features(waveform)
+
+        # Plot extracted features
+        fig, ax = plt.subplots(len(features), 1, figsize=(16, 4.3 * len(features)))
+        for i, feats in enumerate(features):
+            ax[i].imshow(feats[0].cpu(), interpolation="nearest")
+            ax[i].set_title(f"Feature from transformer layer {i+1}")
+            ax[i].set_xlabel("Feature dimension")
+            ax[i].set_ylabel("Frame (time-axis)")
+        st.pyplot(fig)
+
+        # Get predictions from model
         with torch.inference_mode():
             emission, _ = model(waveform)
 
-        # Decode transcript
-        transcript = decoder(emission[0])
-
-        # Display transcript
-        st.subheader("📝 Transcription:")
-        st.write(transcript)
-
-        # Display audio player
-        st.audio(uploaded_file, format="audio/mp3")
-
-        # Plot emission data
-        st.subheader("📊 Model Output (Emission Data):")
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.imshow(emission[0].cpu().T, interpolation="nearest", aspect="auto")
+        # Plot classification result
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(emission[0].cpu().T, interpolation="nearest")
         ax.set_title("Classification result")
         ax.set_xlabel("Frame (time-axis)")
         ax.set_ylabel("Class")
         st.pyplot(fig)
 
-        # Extract features from transformer layers
-        with torch.inference_mode():
-            features, _ = model.extract_features(waveform)
-
-        st.subheader("📈 Feature Maps from Transformer Layers:")
-        fig, axs = plt.subplots(len(features), 1, figsize=(12, 3 * len(features)))
-        if len(features) == 1:
-            axs = [axs]
-        for i, feats in enumerate(features):
-            axs[i].imshow(feats[0].cpu(), interpolation="nearest", aspect="auto")
-            axs[i].set_title(f"Feature from transformer layer {i + 1}")
-            axs[i].set_xlabel("Feature dimension")
-            axs[i].set_ylabel("Frame (time-axis)")
-        st.pyplot(fig)
+        # Decode the output to text
+        transcript = decoder(emission[0])
+        st.subheader("Transcript:")
+        st.write(transcript)
 
     except Exception as e:
-        st.error(f"Error loading audio file: {e}")
+        st.error(f"Error processing audio file: {e}")
 
-# Footer
-st.write("💡 Powered by Torchaudio, PyTorch, and Streamlit")
