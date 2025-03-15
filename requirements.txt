@@ -3,4 +3,4 @@ torchaudio
 streamlit
 matplotlib
 pydub
-ffmpeg
+ffmpeg-python
