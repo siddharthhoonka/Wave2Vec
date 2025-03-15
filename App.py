@@ -6,6 +6,10 @@ import matplotlib.pyplot as plt
 import io
 from pydub import AudioSegment
 
+# 🔥 Fix: Set FFmpeg path explicitly for pydub
+AudioSegment.converter = "/usr/bin/ffmpeg"  # Adjust path for Windows if needed
+AudioSegment.ffprobe = "/usr/bin/ffprobe"
+
 # Set device
 torch.random.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -43,29 +47,29 @@ uploaded_file = st.file_uploader("Upload an audio file (MP3, WAV)", type=["mp3",
 
 if uploaded_file is not None:
     try:
-        # Convert to WAV using pydub
+        # ✅ Convert to WAV using pydub
         file_bytes = io.BytesIO(uploaded_file.read())
         audio = AudioSegment.from_file(file_bytes)
         wav_bytes = io.BytesIO()
         audio.export(wav_bytes, format="wav")
         wav_bytes.seek(0)
 
-        # Load waveform using torchaudio
+        # ✅ Load waveform using torchaudio
         waveform, input_sample_rate = torchaudio.load(wav_bytes)
         waveform = waveform.to(device)
 
-        # Resample if sample rate is different
+        # ✅ Resample if sample rate is different
         if input_sample_rate != sample_rate:
             waveform = torchaudio.functional.resample(waveform, input_sample_rate, sample_rate)
 
-        # Display audio player
+        # ✅ Display audio player
         st.audio(wav_bytes, format="audio/wav")
 
-        # Extract features from the model
+        # ✅ Extract features from the model
         with torch.inference_mode():
             features, _ = model.extract_features(waveform)
 
-        # Plot extracted features
+        # ✅ Plot extracted features
         fig, ax = plt.subplots(len(features), 1, figsize=(16, 4.3 * len(features)))
         for i, feats in enumerate(features):
             ax[i].imshow(feats[0].cpu(), interpolation="nearest")
@@ -74,11 +78,11 @@ if uploaded_file is not None:
             ax[i].set_ylabel("Frame (time-axis)")
         st.pyplot(fig)
 
-        # Get predictions from model
+        # ✅ Get predictions from model
         with torch.inference_mode():
             emission, _ = model(waveform)
 
-        # Plot classification result
+        # ✅ Plot classification result
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.imshow(emission[0].cpu().T, interpolation="nearest")
         ax.set_title("Classification result")
@@ -86,7 +90,7 @@ if uploaded_file is not None:
         ax.set_ylabel("Class")
         st.pyplot(fig)
 
-        # Decode the output to text
+        # ✅ Decode the output to text
         transcript = decoder(emission[0])
         st.subheader("Transcript:")
         st.write(transcript)
